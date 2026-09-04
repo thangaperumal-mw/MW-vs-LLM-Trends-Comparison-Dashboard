@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MW Trend Analysis — Meltwater vs LLM Coverage Dashboard</title>
+<script><?!= chartJsLib ?></script>
+<style>
+:root{
+  --teal:#28BBBB; --teal-med:#00A7A5; --teal-dark:#1C7070;
+  --teal-tint1:#A3DFDF; --teal-tint2:#C0EBEB; --teal-tint3:#E1EFF0;
+  --gray-bg:#F0F4F4; --ink:#1A1A1A; --ink-soft:#5B6B6B;
+  --amber:#FFCC01; --orange:#FF6221; --purple:#B627A1;
+  --good:#1C8C6E; --bad:#D0473A;
+  --card:#ffffff; --radius:12px; --gap:18px;
+  --shadow:0 1px 3px rgba(0,0,0,0.07), 0 1px 2px rgba(0,0,0,0.05);
+}
+*{box-sizing:border-box;}
+body{
+  margin:0; background:var(--gray-bg); color:var(--ink);
+  font-family:'Poppins','GT Walsheim',Arial,Helvetica,sans-serif;
+  font-size:14px; line-height:1.45;
+}
+.wrap{max-width:1400px; margin:0 auto; padding:20px;}
+header.top{
+  background:linear-gradient(120deg,var(--teal-dark),var(--teal));
+  color:#fff; border-radius:var(--radius); padding:22px 26px; margin-bottom:var(--gap);
+  display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:16px;
+  box-shadow:var(--shadow);
+}
+header.top h1{font-size:20px; font-weight:600; margin:0 0 4px 0; letter-spacing:-0.2px;}
+header.top .sub{font-size:12.5px; opacity:.9;}
+.status-row{display:flex; align-items:center; gap:14px; flex-wrap:wrap;}
+.status-pill{
+  padding:6px 14px; border-radius:20px; font-weight:600; font-size:12.5px;
+  background:rgba(255,255,255,0.16); border:1px solid rgba(255,255,255,0.35);
+}
+.status-pill.on-track{background:rgba(28,140,110,0.25); border-color:rgba(28,140,110,0.6);}
+.status-pill.attention{background:rgba(255,204,1,0.22); border-color:rgba(255,204,1,0.55); color:#fff;}
+.status-pill.at-risk{background:rgba(208,71,58,0.28); border-color:rgba(208,71,58,0.6);}
+.refresh-box{display:flex; flex-direction:column; align-items:flex-end; gap:6px; font-size:12px;}
+.refresh-box button{
+  background:#fff; color:var(--teal-dark); border:none; border-radius:8px;
+  padding:8px 14px; font-weight:600; font-size:12.5px; cursor:pointer;
+}
+.refresh-box button:disabled{opacity:.6; cursor:default;}
+.refresh-status{opacity:.9;}
+.banner{
+  border-radius:10px; padding:10px 16px; margin-bottom:var(--gap); font-size:13px;
+  display:none; align-items:center; gap:10px;
+}
+.banner.show{display:flex;}
+.banner.warn{background:#FFF6D8; border:1px solid #FFCC01; color:#6b5900;}
+.banner.err{background:#FCE8E6; border:1px solid var(--bad); color:#7a231c;}
+
+.kpi-row{display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:var(--gap); margin-bottom:var(--gap);}
+.kpi-card{background:var(--card); border-radius:var(--radius); padding:16px 18px; box-shadow:var(--shadow);}
+.kpi-label{font-size:11.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.5px; margin-bottom:6px; font-weight:600;}
+.kpi-value{font-size:26px; font-weight:700; color:var(--ink);}
+.kpi-sub{font-size:12px; color:var(--ink-soft); margin-top:4px;}
+.kpi-card.accent{border-left:4px solid var(--teal);}
+
+.tabs{display:flex; gap:6px; margin-bottom:var(--gap); flex-wrap:wrap;}
+.tab-btn{
+  padding:9px 16px; border-radius:8px; border:1px solid #d8e2e2; background:#fff;
+  font-size:13px; font-weight:600; color:var(--ink-soft); cursor:pointer;
+}
+.tab-btn.active{background:var(--teal); border-color:var(--teal); color:#fff;}
+.page{display:none;}
+.page.active{display:block;}
+
+.grid-2{display:grid; grid-template-columns:1.3fr 1fr; gap:var(--gap); margin-bottom:var(--gap);}
+.grid-3{display:grid; grid-template-columns:repeat(3,1fr); gap:var(--gap); margin-bottom:var(--gap);}
+@media (max-width:900px){ .grid-2, .grid-3{grid-template-columns:1fr;} }
+
+.card{background:var(--card); border-radius:var(--radius); padding:18px 20px; box-shadow:var(--shadow);}
+.card h3{font-size:13.5px; font-weight:600; margin:0 0 4px 0; color:var(--ink);}
+.card .hint{font-size:11.5px; color:var(--ink-soft); margin-bottom:12px;}
+.chart-holder{position:relative; height:280px;}
+.chart-holder.short{height:220px;}
+
+table.heat{width:100%; border-collapse:collapse; font-size:12.5px;}
+table.heat th{
+  text-align:left; padding:8px 10px; font-size:11px; text-transform:uppercase; letter-spacing:.4px;
+  color:var(--ink-soft); border-bottom:2px solid #e4ecec; cursor:pointer; white-space:nowrap;
+}
+table.heat td{padding:7px 10px; border-bottom:1px solid #f0f4f4; white-space:nowrap;}
+table.heat tbody tr:hover{background:#f7fbfb;}
+.pct-chip{display:inline-block; padding:2px 9px; border-radius:12px; font-weight:600; font-size:11.5px; color:#fff;}
+.cat-name{font-weight:600;}
+.mono{font-variant-numeric:tabular-nums;}
+
+.filters{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px;}
+.filters select, .filters input[type=text]{
+  padding:7px 10px; border:1px solid #d8e2e2; border-radius:7px; font-size:12.5px; background:#fff; color:var(--ink);
+}
+.filters input[type=text]{min-width:180px;}
+
+.table-scroll{overflow-x:auto; max-height:520px; overflow-y:auto; border-top:1px solid #eef3f3;}
+table.data{width:100%; border-collapse:collapse; font-size:12px;}
+table.data thead th{
+  position:sticky; top:0; background:#fff; text-align:left; padding:9px 10px; z-index:2;
+  border-bottom:2px solid #e4ecec; font-size:10.5px; text-transform:uppercase; color:var(--ink-soft); white-space:nowrap;
+}
+table.data tbody td{padding:8px 10px; border-bottom:1px solid #f2f6f6; white-space:nowrap; max-width:220px; overflow:hidden; text-overflow:ellipsis;}
+table.data tbody tr:hover{background:#f7fbfb;}
+.badge{padding:2px 8px; border-radius:10px; font-size:10.5px; font-weight:600;}
+.badge.in-both{background:#DCF3EC; color:var(--good);}
+.badge.mw-only{background:#FDEAE4; color:var(--orange);}
+.badge.not-yet{background:#EEF1F1; color:var(--ink-soft);}
+.badge.high{background:#DCF3EC; color:var(--good);}
+.badge.low{background:#FDEAE4; color:var(--bad);}
+.badge.medium{background:#FFF6D8; color:#8a7300;}
+
+.footer{margin-top:26px; text-align:center; font-size:11.5px; color:var(--ink-soft); padding-bottom:20px;}
+.footer .rev{margin-top:4px; font-weight:600; color:var(--teal-dark);}
+.pager{display:flex; justify-content:space-between; align-items:center; margin-top:10px; font-size:12px; color:var(--ink-soft);}
+.pager button{border:1px solid #d8e2e2; background:#fff; border-radius:6px; padding:5px 10px; cursor:pointer; font-size:12px;}
+.pager button:disabled{opacity:.4; cursor:default;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div>
+    <h1>MW Trend Analysis — Meltwater vs LLM Coverage</h1>
+    <div class="sub">Weekly stakeholder view · 25 categories · 4 channels · Curated News, Reddit, Facebook, Channel 4</div>
+    <div class="status-row" id="status-row" style="margin-top:10px;"></div>
+  </div>
+  <div class="refresh-box">
+    <button onclick="location.reload(true)">↻ Refresh now</button>
+    <div class="refresh-status" id="refresh-status">Live · every page load reads the sheet fresh, no cache</div>
+  </div>
+</header>
+
+<div class="tabs">
+  <button class="tab-btn active" data-page="overview" onclick="Dash.showPage('overview')">Executive Overview</button>
+  <button class="tab-btn" data-page="progress" onclick="Dash.showPage('progress')">Weekly Progress</button>
+  <button class="tab-btn" data-page="coverage" onclick="Dash.showPage('coverage')">Coverage &amp; Blind Spots</button>
+  <button class="tab-btn" data-page="explorer" onclick="Dash.showPage('explorer')">Segment Explorer</button>
+  <button class="tab-btn" data-page="quality" onclick="Dash.showPage('quality')">Data Quality</button>
+</div>
+
+<!-- PAGE: OVERVIEW -->
+<div class="page active" id="page-overview">
+  <div class="kpi-row" id="kpi-overview"></div>
+  <div class="grid-2">
+    <div class="card">
+      <h3>Top blind-spot categories</h3>
+      <div class="hint">Where the LLM surfaces trends we don't rank at all — highest miss rate, among categories with data</div>
+      <div class="chart-holder"><canvas id="chart-top-blindspots"></canvas></div>
+    </div>
+    <div class="card">
+      <h3>Channel coverage snapshot</h3>
+      <div class="hint">Alignment rate vs blind-spot rate — compare rates, never raw counts, across channels</div>
+      <div class="chart-holder"><canvas id="chart-channel-overview"></canvas></div>
+    </div>
+  </div>
+  <div class="grid-2">
+    <div class="card">
+      <h3>Categories in progress</h3>
+      <div class="hint">Of 25 Tier-1 categories, how many have started</div>
+      <div class="chart-holder short"><canvas id="chart-cats-started"></canvas></div>
+    </div>
+    <div class="card">
+      <h3>Confidence mix</h3>
+      <div class="hint">Reviewer confidence across all logged segments</div>
+      <div class="chart-holder short"><canvas id="chart-confidence-mix"></canvas></div>
+    </div>
+  </div>
+</div>
+
+<!-- PAGE: WEEKLY PROGRESS -->
+<div class="page" id="page-progress">
+  <div class="kpi-row" id="kpi-progress"></div>
+  <div class="card" style="margin-bottom:var(--gap);">
+    <h3>Segments logged over time</h3>
+    <div class="hint">Bucketed by the Date &amp; Time each segment was pulled (ISO week, Mon–Sun)</div>
+    <div class="chart-holder"><canvas id="chart-weekly-progress"></canvas></div>
+  </div>
+  <div class="grid-2">
+    <div class="card">
+      <h3>Cumulative % complete vs straight-line target</h3>
+      <div class="hint">Target assumes even pace across the 15-day evaluation window</div>
+      <div class="chart-holder"><canvas id="chart-cumulative"></canvas></div>
+    </div>
+    <div class="card">
+      <h3>HITL reviewer workload</h3>
+      <div class="hint">Segments signed off per reviewer</div>
+      <div class="chart-holder"><canvas id="chart-hitl"></canvas></div>
+    </div>
+  </div>
+</div>
+
+<!-- PAGE: COVERAGE -->
+<div class="page" id="page-coverage">
+  <div class="card" style="margin-bottom:var(--gap);">
+    <h3>Blind-spot rate by category × channel</h3>
+    <div class="hint">Blank = no LLM trends logged yet for that category/channel (not a score of zero). Green = good coverage, red = blind spot. Click a header to sort.</div>
+    <div id="heatmap-holder"></div>
+  </div>
+  <div class="card">
+    <h3>Lead / Lag signal mix</h3>
+    <div class="hint">Does our trend show up in the LLM's list, and vice versa — aggregated across all logged segments</div>
+    <div class="chart-holder short"><canvas id="chart-lead-lag"></canvas></div>
+  </div>
+</div>
+
+<!-- PAGE: EXPLORER -->
+<div class="page" id="page-explorer">
+  <div class="card">
+    <h3>Segment-level detail</h3>
+    <div class="hint">Every logged row across all 25 category tabs — filter, then scroll</div>
+    <div class="filters">
+      <select id="f-category"><option value="">All categories</option></select>
+      <select id="f-channel"><option value="">All channels</option></select>
+      <select id="f-coverage"><option value="">All coverage</option></select>
+      <select id="f-crossplatform"><option value="">All cross-platform</option></select>
+      <select id="f-confidence"><option value="">All confidence</option></select>
+      <select id="f-hitl"><option value="">All reviewers</option></select>
+      <input type="text" id="f-search" placeholder="Search trend name…">
+    </div>
+    <div class="table-scroll">
+      <table class="data" id="segment-table">
+        <thead><tr>
+          <th>Category</th><th>Location</th><th>Channel</th><th>Rank</th><th>Date</th>
+          <th>MW Trend</th><th>LLM Trend</th><th>Coverage</th><th>Cross-Platform</th>
+          <th>Lead/Lag</th><th>Confidence</th><th>HITL Assignee</th><th>Notes</th>
+        </tr></thead>
+        <tbody id="segment-tbody"></tbody>
+      </table>
+    </div>
+    <div class="pager">
+      <span id="pager-info"></span>
+      <span>
+        <button onclick="Dash.explorerPage(-1)">◀ Prev</button>
+        <button onclick="Dash.explorerPage(1)">Next ▶</button>
+      </span>
+    </div>
+  </div>
+</div>
+
+<!-- PAGE: DATA QUALITY -->
+<div class="page" id="page-quality">
+  <div class="kpi-row" id="kpi-quality"></div>
+  <div class="card">
+    <h3>Categories not yet started</h3>
+    <div class="hint">Zero segments logged — no coverage figures possible yet</div>
+    <div id="not-started-list" style="font-size:13px; line-height:2;"></div>
+  </div>
+</div>
+
+<div class="footer">
+  <div>Source: <span id="footer-sheet-link"></span> · Per team policy, this is AI-assisted analysis and requires human review before use in any stakeholder meeting or CRM note.</div>
+  <div class="rev" id="footer-refresh"></div>
+</div>
+
+</div>
+
+<script id="embedded-data" type="application/json"><?!= dataJson ?></script>
+<script><?!= dashboardJs ?></script>
+</body>
+</html>
