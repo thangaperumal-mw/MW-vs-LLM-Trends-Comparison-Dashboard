@@ -1,0 +1,361 @@
+
+(function(){
+"use strict";
+
+const EMBEDDED = JSON.parse(document.getElementById('embedded-data').textContent);
+const SHEET_ID = EMBEDDED.sheetId;
+const CATEGORIES = EMBEDDED.categories;
+const SEG_PER_CAT = EMBEDDED.segmentsPerCategory;
+
+const PALETTE = {teal:"#28BBBB", tealMed:"#00A7A5", tealDark:"#1C7070",
+  tealTint1:"#A3DFDF", tealTint2:"#C0EBEB", gray:"#5B6B6B",
+  amber:"#FFCC01", orange:"#FF6221", purple:"#B627A1",
+  good:"#1C8C6E", bad:"#D0473A"};
+
+let state = {
+  segments: EMBEDDED.segments,
+  snapshotTime: EMBEDDED.snapshotTime,
+  charts: {},
+  explorerPageIdx: 0,
+  explorerPageSize: 50
+};
+
+function fmtPct(n){ return (n*100).toFixed(1) + "%"; }
+function fmtTime(iso){
+  if(!iso) return "unknown";
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, {year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
+}
+function heatColor(rate){
+  if(rate === null || isNaN(rate)) return "#EEF1F1";
+  const r = Math.max(0, Math.min(1, rate));
+  const good = [28,140,110], bad=[208,71,58];
+  const c = good.map((g,i)=> Math.round(g + (bad[i]-g)*r));
+  return "rgb(" + c.join(",") + ")";
+}
+function destroyChart(id){ if(state.charts[id]){ state.charts[id].destroy(); delete state.charts[id]; } }
+
+// ---------- aggregation ----------
+function computeAll(){
+  const segs = state.segments;
+  const totalPossible = CATEGORIES.length * SEG_PER_CAT;
+  const totalLogged = segs.length;
+
+  const byCat = {};
+  CATEGORIES.forEach(c => byCat[c] = {logged:0, inBoth:0, mwOnly:0, notCompared:0, missedInMw:0});
+  segs.forEach(s => {
+    const b = byCat[s.category];
+    if(!b) return;
+    b.logged++;
+    if(s.cross_platform === "In Both") b.inBoth++;
+    else if(s.cross_platform === "MW Only") b.mwOnly++;
+    else if(s.cross_platform === "Not Compared Yet") b.notCompared++;
+    if(s.coverage === "Missed in MW") b.missedInMw++;
+  });
+
+  const byChannel = {};
+  ["Curated News","Reddit","Facebook","Channel 4 (TBA)"].forEach(c => byChannel[c] = {logged:0, inBoth:0, mwOnly:0, missedInMw:0});
+  segs.forEach(s => {
+    const ch = s.channel;
+    if(!byChannel[ch]) byChannel[ch] = {logged:0, inBoth:0, mwOnly:0, missedInMw:0};
+    const b = byChannel[ch];
+    b.logged++;
+    if(s.cross_platform === "In Both") b.inBoth++;
+    else if(s.cross_platform === "MW Only") b.mwOnly++;
+    if(s.coverage === "Missed in MW") b.missedInMw++;
+  });
+
+  const confidenceMix = {High:0, Medium:0, Low:0};
+  segs.forEach(s => { if(confidenceMix[s.confidence] !== undefined) confidenceMix[s.confidence]++; });
+
+  const leadLagMix = {};
+  segs.forEach(s => { const k = s.lead_lag || "Not Assessed"; leadLagMix[k] = (leadLagMix[k]||0)+1; });
+
+  const hitlMix = {};
+  segs.forEach(s => { const k = s.hitl_assignee || "Unassigned"; hitlMix[k] = (hitlMix[k]||0)+1; });
+
+  const totalInBoth = segs.filter(s=>s.cross_platform==="In Both").length;
+  const totalMissed = segs.filter(s=>s.coverage==="Missed in MW").length;
+  const totalNotCompared = segs.filter(s=>s.cross_platform==="Not Compared Yet").length;
+
+  function isoWeekLabel(dateStr){
+    if(!dateStr) return "Unknown";
+    const d = new Date(dateStr);
+    if(isNaN(d)) return "Unknown";
+    const day = (d.getUTCDay()+6)%7;
+    const monday = new Date(d); monday.setUTCDate(d.getUTCDate()-day);
+    return monday.toISOString().slice(0,10);
+  }
+  const weekly = {};
+  segs.forEach(s => { const w = isoWeekLabel(s.date_time); weekly[w] = (weekly[w]||0)+1; });
+
+  const startedCats = Object.keys(byCat).filter(c => byCat[c].logged>0).length;
+
+  return {totalPossible, totalLogged, byCat, byChannel, confidenceMix, leadLagMix, hitlMix,
+    totalInBoth, totalMissed, totalNotCompared, weekly, startedCats};
+}
+
+// ---------- rendering ----------
+function renderKPICards(container, cards){
+  container.innerHTML = cards.map(c => `
+    <div class="kpi-card ${c.accent?'accent':''}">
+      <div class="kpi-label">${c.label}</div>
+      <div class="kpi-value">${c.value}</div>
+      ${c.sub? `<div class="kpi-sub">${c.sub}</div>`:''}
+    </div>`).join("");
+}
+
+function renderStatusRow(agg){
+  const pctComplete = agg.totalLogged/agg.totalPossible;
+  let status = 'on-track', label='On Track';
+  if(pctComplete < 0.02 && agg.startedCats < 3){ status='at-risk'; label='At Risk'; }
+  else if(pctComplete < 0.15){ status='attention'; label='Needs Attention'; }
+  document.getElementById('status-row').innerHTML = `
+    <span class="status-pill ${status}">${label}</span>
+    <span class="status-pill">${agg.startedCats} / ${CATEGORIES.length} categories started</span>
+    <span class="status-pill">${fmtPct(pctComplete)} of all segments complete</span>
+  `;
+}
+
+function renderOverview(agg){
+  renderStatusRow(agg);
+  renderKPICards(document.getElementById('kpi-overview'), [
+    {label:"Segments Logged", value: agg.totalLogged.toLocaleString(), sub: "of " + agg.totalPossible.toLocaleString() + " possible", accent:true},
+    {label:"% Complete", value: fmtPct(agg.totalLogged/agg.totalPossible)},
+    {label:"MW Alignment Rate", value: fmtPct(agg.totalInBoth/(agg.totalLogged||1)), sub:"share of our list the LLM confirms"},
+    {label:"Blind-Spot Rate", value: fmtPct(agg.totalMissed/(agg.totalLogged||1)), sub:"LLM trends we don't rank at all"},
+    {label:"Not Compared Yet", value: agg.totalNotCompared.toLocaleString(), sub:"work remaining"},
+  ]);
+
+  const withData = Object.entries(agg.byCat).filter(([c,v])=>v.logged>0)
+    .map(([c,v])=>({cat:c, rate: v.missedInMw/v.logged}))
+    .sort((a,b)=>b.rate-a.rate).slice(0,8);
+  destroyChart('top-blindspots');
+  state.charts['top-blindspots'] = new Chart(document.getElementById('chart-top-blindspots'), {
+    type:'bar',
+    data:{labels: withData.map(d=>d.cat.replace(/_/g,' ')),
+      datasets:[{label:'Blind-spot rate', data: withData.map(d=>+(d.rate*100).toFixed(1)),
+        backgroundColor: PALETTE.orange}]},
+    options:{indexAxis:'y', responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{display:false}}, scales:{x:{ticks:{callback:v=>v+'%'}}}}
+  });
+
+  const chLabels = Object.keys(agg.byChannel).filter(c=>agg.byChannel[c].logged>0);
+  destroyChart('channel-overview');
+  state.charts['channel-overview'] = new Chart(document.getElementById('chart-channel-overview'), {
+    type:'bar',
+    data:{labels: chLabels,
+      datasets:[
+        {label:'Alignment rate', data: chLabels.map(c=>+(agg.byChannel[c].inBoth/agg.byChannel[c].logged*100).toFixed(1)), backgroundColor: PALETTE.teal},
+        {label:'Blind-spot rate', data: chLabels.map(c=>+(agg.byChannel[c].missedInMw/agg.byChannel[c].logged*100).toFixed(1)), backgroundColor: PALETTE.orange}
+      ]},
+    options:{responsive:true, maintainAspectRatio:false, scales:{y:{ticks:{callback:v=>v+'%'}}}}
+  });
+
+  destroyChart('cats-started');
+  state.charts['cats-started'] = new Chart(document.getElementById('chart-cats-started'), {
+    type:'doughnut',
+    data:{labels:['Started','Not started'], datasets:[{data:[agg.startedCats, CATEGORIES.length-agg.startedCats],
+      backgroundColor:[PALETTE.teal, '#E4ECEC']}]},
+    options:{responsive:true, maintainAspectRatio:false, plugins:{legend:{position:'bottom'}}}
+  });
+
+  destroyChart('confidence-mix');
+  state.charts['confidence-mix'] = new Chart(document.getElementById('chart-confidence-mix'), {
+    type:'doughnut',
+    data:{labels:Object.keys(agg.confidenceMix), datasets:[{data:Object.values(agg.confidenceMix),
+      backgroundColor:[PALETTE.good, PALETTE.amber, PALETTE.bad]}]},
+    options:{responsive:true, maintainAspectRatio:false, plugins:{legend:{position:'bottom'}}}
+  });
+}
+
+function renderProgress(agg){
+  renderKPICards(document.getElementById('kpi-progress'), [
+    {label:"Segments Logged", value: agg.totalLogged.toLocaleString()},
+    {label:"Weeks with activity", value: Object.keys(agg.weekly).length},
+    {label:"Reviewers active", value: Object.keys(agg.hitlMix).length},
+  ]);
+
+  const weekKeys = Object.keys(agg.weekly).sort();
+  destroyChart('weekly-progress');
+  state.charts['weekly-progress'] = new Chart(document.getElementById('chart-weekly-progress'), {
+    type:'bar',
+    data:{labels: weekKeys.map(w=> w==='Unknown'? 'Unknown' : 'Week of '+w),
+      datasets:[{label:'Segments logged', data: weekKeys.map(w=>agg.weekly[w]), backgroundColor: PALETTE.teal}]},
+    options:{responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}}
+  });
+
+  let cum = 0;
+  const cumData = weekKeys.map(w => { cum += agg.weekly[w]; return cum; });
+  destroyChart('cumulative');
+  state.charts['cumulative'] = new Chart(document.getElementById('chart-cumulative'), {
+    type:'line',
+    data:{labels: weekKeys, datasets:[
+      {label:'Cumulative segments', data: cumData, borderColor: PALETTE.teal, backgroundColor: PALETTE.teal+'30', fill:true, tension:.3},
+    ]},
+    options:{responsive:true, maintainAspectRatio:false}
+  });
+
+  const hitlEntries = Object.entries(agg.hitlMix).sort((a,b)=>b[1]-a[1]);
+  destroyChart('hitl');
+  state.charts['hitl'] = new Chart(document.getElementById('chart-hitl'), {
+    type:'bar',
+    data:{labels: hitlEntries.map(e=>e[0]), datasets:[{label:'Segments reviewed', data: hitlEntries.map(e=>e[1]), backgroundColor: PALETTE.tealMed}]},
+    options:{indexAxis:'y', responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}}
+  });
+}
+
+function renderCoverage(agg){
+  const rows = CATEGORIES.map(c => {
+    const b = agg.byCat[c];
+    const rate = b.logged>0 ? b.missedInMw/b.logged : null;
+    return {cat:c, logged:b.logged, pctComplete: b.logged/SEG_PER_CAT, alignRate: b.logged>0? b.inBoth/b.logged: null, blindRate: rate};
+  }).sort((a,b) => (b.blindRate ?? -1) - (a.blindRate ?? -1));
+
+  let html = `<table class="heat"><thead><tr>
+    <th>Category</th><th>Segments Logged</th><th>% Complete</th><th>Alignment Rate</th><th>Blind-Spot Rate</th>
+  </tr></thead><tbody>`;
+  rows.forEach(r => {
+    const chip = r.blindRate===null ? '<span class="pct-chip" style="background:#c9d2d2;">n/a</span>' :
+      `<span class="pct-chip" style="background:${heatColor(r.blindRate)}">${(r.blindRate*100).toFixed(1)}%</span>`;
+    html += `<tr>
+      <td class="cat-name">${r.cat.replace(/_/g,' ')}</td>
+      <td class="mono">${r.logged}</td>
+      <td class="mono">${(r.pctComplete*100).toFixed(1)}%</td>
+      <td class="mono">${r.alignRate===null?'—':(r.alignRate*100).toFixed(1)+'%'}</td>
+      <td>${chip}</td>
+    </tr>`;
+  });
+  html += `</tbody></table>`;
+  document.getElementById('heatmap-holder').innerHTML = html;
+
+  const llEntries = Object.entries(agg.leadLagMix).sort((a,b)=>b[1]-a[1]);
+  destroyChart('lead-lag');
+  state.charts['lead-lag'] = new Chart(document.getElementById('chart-lead-lag'), {
+    type:'bar',
+    data:{labels: llEntries.map(e=>e[0]), datasets:[{label:'Segments', data: llEntries.map(e=>e[1]),
+      backgroundColor:[PALETTE.good, PALETTE.orange, PALETTE.tealMed, '#c9d2d2']}]},
+    options:{responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}}
+  });
+}
+
+function renderQuality(agg){
+  const notStarted = CATEGORIES.filter(c => agg.byCat[c].logged===0);
+  renderKPICards(document.getElementById('kpi-quality'), [
+    {label:"Categories at 0%", value: notStarted.length + " / " + CATEGORIES.length},
+    {label:"Segments logged", value: agg.totalLogged},
+    {label:"Not Compared Yet", value: agg.totalNotCompared, sub:"LLM side still pending"},
+    {label:"This page loaded", value: fmtTime(state.snapshotTime)},
+  ]);
+  document.getElementById('not-started-list').innerHTML = notStarted.map(c=>c.replace(/_/g,' ')).join(' · ') || 'None — all categories have started.';
+}
+
+// ---------- filters + explorer ----------
+function populateFilterOptions(){
+  const segs = state.segments;
+  const uniq = (key) => [...new Set(segs.map(s=>s[key]).filter(Boolean))].sort();
+  fillSelect('f-category', CATEGORIES.map(c=>({v:c, t:c.replace(/_/g,' ')})));
+  fillSelect('f-channel', uniq('channel').map(v=>({v,t:v})));
+  fillSelect('f-coverage', uniq('coverage').map(v=>({v,t:v})));
+  fillSelect('f-crossplatform', uniq('cross_platform').map(v=>({v,t:v})));
+  fillSelect('f-confidence', uniq('confidence').map(v=>({v,t:v})));
+  fillSelect('f-hitl', uniq('hitl_assignee').map(v=>({v,t:v})));
+}
+function fillSelect(id, opts){
+  const el = document.getElementById(id);
+  const current = el.value;
+  el.innerHTML = el.options[0].outerHTML + opts.map(o=>`<option value="${o.v}">${o.t}</option>`).join("");
+  if([...el.options].some(o=>o.value===current)) el.value = current;
+}
+
+function filteredSegments(){
+  const cat = document.getElementById('f-category').value;
+  const ch = document.getElementById('f-channel').value;
+  const cov = document.getElementById('f-coverage').value;
+  const cp = document.getElementById('f-crossplatform').value;
+  const conf = document.getElementById('f-confidence').value;
+  const hitl = document.getElementById('f-hitl').value;
+  const q = document.getElementById('f-search').value.trim().toLowerCase();
+  return state.segments.filter(s => {
+    if(cat && s.category!==cat) return false;
+    if(ch && s.channel!==ch) return false;
+    if(cov && s.coverage!==cov) return false;
+    if(cp && s.cross_platform!==cp) return false;
+    if(conf && s.confidence!==conf) return false;
+    if(hitl && s.hitl_assignee!==hitl) return false;
+    if(q && !((s.mw_trend||'').toLowerCase().includes(q) || (s.llm_trend||'').toLowerCase().includes(q))) return false;
+    return true;
+  });
+}
+
+function badgeFor(val, kind){
+  if(!val) return '';
+  let cls = 'not-yet';
+  if(kind==='cp'){ cls = val==='In Both'?'in-both': val==='MW Only'?'mw-only':'not-yet'; }
+  if(kind==='conf'){ cls = val==='High'?'high': val==='Low'?'low':'medium'; }
+  return `<span class="badge ${cls}">${val}</span>`;
+}
+
+function renderExplorer(){
+  const data = filteredSegments();
+  const start = state.explorerPageIdx * state.explorerPageSize;
+  const pageRows = data.slice(start, start+state.explorerPageSize);
+  document.getElementById('segment-tbody').innerHTML = pageRows.map(s => `
+    <tr>
+      <td>${(s.category||'').replace(/_/g,' ')}</td>
+      <td>${s.location||''}</td>
+      <td>${s.channel||''}</td>
+      <td>${s.rank ?? ''}</td>
+      <td>${s.date_time||''}</td>
+      <td title="${s.mw_trend||''}">${s.mw_trend||''}</td>
+      <td title="${s.llm_trend||''}">${s.llm_trend||''}</td>
+      <td>${s.coverage||''}</td>
+      <td>${badgeFor(s.cross_platform,'cp')}</td>
+      <td>${s.lead_lag||''}</td>
+      <td>${badgeFor(s.confidence,'conf')}</td>
+      <td>${s.hitl_assignee||''}</td>
+      <td title="${s.notes||''}">${s.notes||''}</td>
+    </tr>`).join("");
+  const total = data.length;
+  document.getElementById('pager-info').textContent = `Showing ${total===0?0:start+1}–${Math.min(start+state.explorerPageSize,total)} of ${total}`;
+}
+
+function explorerPage(delta){
+  const data = filteredSegments();
+  const pages = Math.max(1, Math.ceil(data.length/state.explorerPageSize));
+  state.explorerPageIdx = Math.max(0, Math.min(pages-1, state.explorerPageIdx+delta));
+  renderExplorer();
+}
+
+function showPage(name){
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active', b.dataset.page===name));
+  document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active', p.id==='page-'+name));
+}
+
+function renderAll(){
+  const agg = computeAll();
+  renderOverview(agg);
+  renderProgress(agg);
+  renderCoverage(agg);
+  renderQuality(agg);
+  populateFilterOptions();
+  state.explorerPageIdx = 0;
+  renderExplorer();
+  document.getElementById('footer-refresh').textContent = "Computed live from the sheet at page load: " + fmtTime(state.snapshotTime) + " · reload the page anytime for the current data";
+  document.getElementById('footer-sheet-link').innerHTML = `<a href="https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit" target="_blank" rel="noopener" style="color:var(--teal-dark)">Trend_Analysis_Worksheet</a>`;
+}
+
+["f-category","f-channel","f-coverage","f-crossplatform","f-confidence","f-hitl"].forEach(id=>{
+  document.addEventListener('DOMContentLoaded', ()=>{
+    document.getElementById(id).addEventListener('change', ()=>{ state.explorerPageIdx=0; renderExplorer(); });
+  });
+});
+document.addEventListener('DOMContentLoaded', ()=>{
+  document.getElementById('f-search').addEventListener('input', ()=>{ state.explorerPageIdx=0; renderExplorer(); });
+});
+
+window.Dash = {showPage, explorerPage};
+
+document.addEventListener('DOMContentLoaded', renderAll);
+
+})();
