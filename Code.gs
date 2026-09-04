@@ -29,16 +29,13 @@ var DATA_START_ROW = 6; // row 5 is the header, data runs rows 6-345
 
 function doGet(e) {
   var data = buildDashboardData();
-
   var tmpl = HtmlService.createTemplateFromFile('Index');
   tmpl.dataJson = JSON.stringify(data);
   tmpl.dashboardJs = HtmlService.createHtmlOutputFromFile('DashboardJs').getContent();
   tmpl.chartJsLib = HtmlService.createHtmlOutputFromFile('ChartJsLib').getContent();
-
   return tmpl.evaluate()
     .setTitle('MW Trend Analysis — Meltwater vs LLM Coverage')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1')
-    // ALLOWALL lets this be embedded in an iframe (e.g. a Confluence page) if useful later.
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
